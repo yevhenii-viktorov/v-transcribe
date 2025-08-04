@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir:*)",
+      "Bash(go mod:*)",
+      "Bash(docker compose:*)",
+      "Bash(grep:*)",
+      "Bash(chmod:*)"
+    ],
+    "deny": []
+  }
+}

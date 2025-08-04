@@ -1,0 +1,22 @@
+# Environment files with secrets
+config/secrets.env
+
+# Data directories
+data/
+transcripts/
+whisper-models/
+
+# Docker volumes
+appdata/
+
+# Logs
+*.log
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db

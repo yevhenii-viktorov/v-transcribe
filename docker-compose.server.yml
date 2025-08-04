@@ -1,0 +1,154 @@
+# =============================================================================
+# YouTube Transcription Service - Server Deployment
+# =============================================================================
+# COPY THIS ENTIRE CONTENT TO YOUR EXISTING docker-compose.yml
+# Just append these services and volumes to your existing file
+
+# Environment file configuration (if not already in your compose file)
+x-env-files: &env-files
+ - config/default.env
+ - config/secrets.env
+
+# Add these anchors if not already in your compose file
+x-environment: &default-tz-puid-pgid
+ TZ: $TZ
+ PUID: $PUID
+ PGID: $PGID
+
+x-common-keys-apps: &common-keys-apps
+ networks:
+  - npm_proxy
+ security_opt:
+  - no-new-privileges:true
+ restart: unless-stopped
+
+services:
+
+  # YouTube Transcription API
+  v-transcribe-api:
+    <<: *common-keys-apps
+    build:
+      context: $DOCKERDIR/v-transcribe
+      dockerfile: docker/Dockerfile.api
+    container_name: v-transcribe-api
+    env_file: *env-files
+    environment:
+      <<: *default-tz-puid-pgid
+    volumes:
+      - youtube-transcripts:/data
+      - youtube-whisper-models:/whisper-models
+      - /tmp:/tmp
+    networks:
+      npm_proxy:
+        ipv4_address: 192.168.10.71  # Update if this IP is taken
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+
+  # OpenAI Whisper Transcription Service
+  v-transcribe-whisper:
+    <<: *common-keys-apps
+    image: ghcr.io/mutablelogic/go-whisper:latest
+    container_name: v-transcribe-whisper
+    env_file: *env-files
+    environment:
+      <<: *default-tz-puid-pgid
+      - WHISPER_MODEL=ggml-tiny.bin  # Fast processing, good quality
+    volumes:
+      - youtube-whisper-models:/data
+    networks:
+      npm_proxy:
+        ipv4_address: 192.168.10.72  # Update if this IP is taken
+    deploy:
+      resources:
+        limits:
+          memory: 1200M   # Whisper needs more memory
+        reservations:
+          memory: 600M
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:80/api/v1/models"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # Frontend (serves static files and acts as API proxy)
+  v-transcribe-web:
+    <<: *common-keys-apps
+    image: nginx:alpine
+    container_name: v-transcribe-web
+    env_file: *env-files
+    networks:
+      npm_proxy:
+        ipv4_address: 192.168.10.73  # Update if this IP is taken
+    volumes:
+      - $DOCKERDIR/v-transcribe/frontend:/usr/share/nginx/html:ro
+      - youtube-transcripts:/usr/share/nginx/html/files:ro
+      - $DOCKERDIR/v-transcribe/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - v-transcribe-api
+      - v-transcribe-whisper
+
+# ADD THESE VOLUMES TO YOUR EXISTING volumes: section
+volumes:
+  youtube-whisper-models:
+    driver: local
+  youtube-transcripts:
+    driver: local
+
+# =============================================================================
+# NGINX PROXY MANAGER SETUP INSTRUCTIONS
+# =============================================================================
+# 
+# 1. In your Nginx Proxy Manager web interface, create a new Proxy Host:
+#    - Domain Names: transcribe.yourdomain.com (or your preferred subdomain)
+#    - Scheme: http
+#    - Forward Hostname / IP: v-transcribe-web (or 192.168.10.73)
+#    - Forward Port: 80
+#    - Block Common Exploits: ON
+#    - Websockets Support: OFF
+#
+# 2. SSL Tab:
+#    - SSL Certificate: Request a new SSL Certificate
+#    - Force SSL: ON
+#    - HSTS Enabled: ON
+#    - HTTP/2 Support: ON
+#
+# 3. Advanced Tab (optional):
+#    Custom Nginx Configuration:
+#    ```
+#    # Increase upload limits for large audio files
+#    client_max_body_size 500M;
+#    client_body_timeout 300s;
+#    proxy_read_timeout 300s;
+#    proxy_connect_timeout 300s;
+#    proxy_send_timeout 300s;
+#    ```
+#
+# =============================================================================
+# CONFIGURATION NOTES
+# =============================================================================
+#
+# IP Addresses Used:
+# - 192.168.10.71: v-transcribe-api
+# - 192.168.10.72: v-transcribe-whisper  
+# - 192.168.10.73: v-transcribe-web
+#
+# If any of these IPs conflict with existing services, update them to available IPs
+# in your 192.168.10.0/24 subnet.
+#
+# Volume Locations:
+# - Transcripts: youtube-transcripts volume
+# - Whisper Models: youtube-whisper-models volume
+# - App Code: $DOCKERDIR/v-transcribe/ (make sure this path is correct)
+#
+# Memory Requirements:
+# - Total: ~1.5-2GB RAM
+# - Whisper Service: 600MB-1.2GB (most intensive)
+# - API Service: 256MB-512MB
+# - Web Service: ~50MB
+#
+# =============================================================================

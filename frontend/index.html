@@ -1,0 +1,574 @@
+<!doctype html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="utf-8">
+  <title>YouTube → Transcript</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <!-- HTMX -->
+  <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+  <script src="https://unpkg.com/htmx.org@1.9.10/dist/ext/json-enc.js"></script>
+
+  <!-- Tailwind (via CDN, no build step) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+
+<body class="min-h-full bg-gradient-to-br from-cyan-50 to-blue-100 flex flex-col items-center p-6">
+  <!-- Hero / header -->
+  <header class="w-full max-w-3xl text-center mb-8">
+    <h1 class="text-4xl font-extrabold tracking-tight text-gray-800 mb-2 drop-shadow-sm">
+      YouTube&nbsp;→&nbsp;Transcript
+    </h1>
+    <p class="text-gray-600">
+      Paste a public YouTube link and get a clean transcript or downloadable text file.
+    </p>
+  </header>
+
+  <main class="w-full max-w-3xl">
+    <!-- Upload card -->
+    <div class="bg-white/70 backdrop-blur-md shadow-xl rounded-2xl p-8 ring-1 ring-gray-200/40 hover:ring-blue-400/40 transition">
+      <form id="ytForm"
+            hx-post="/job"
+            hx-ext="json-enc"
+            hx-target="#jobCard"
+            hx-swap="innerHTML"
+            hx-indicator="#loading"
+            class="flex flex-col gap-4">
+        <label class="block text-left">
+          <span class="text-gray-700 font-medium">YouTube URL</span>
+          <input name="url"
+                 type="url"
+                 required
+                 placeholder="https://youtu.be/..."
+                 class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-400 focus:ring-2 focus:ring-blue-300 p-3 border"/>
+        </label>
+
+        <button type="submit"
+                class="inline-flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white font-semibold rounded-md px-6 py-3 transition">
+          <!-- Lucide "Play" icon -->
+          <svg xmlns="http://www.w3.org/2000/svg"
+               class="w-5 h-5 stroke-[2.5] stroke-current" fill="none" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round"
+                  d="M7.5 4.8v14.4a1 1 0 0 0 1.52.86l11.06-7.2a1 1 0 0 0 0-1.72L9.02 4.8A1 1 0 0 0 7.5 5.66Z"/>
+          </svg>
+          <span class="htmx-indicator" id="loading" style="display:none;">Processing...</span>
+          <span class="htmx-request:hidden">Transcribe</span>
+        </button>
+      </form>
+    </div>
+
+    <!-- Job-status card -->
+    <div id="jobCard" class="mt-8"></div>
+    
+    <!-- History section -->
+    <div id="historySection" class="mt-12">
+      <div class="flex items-center justify-between mb-6">
+        <h2 class="text-2xl font-bold text-gray-800">Recent Transcriptions</h2>
+        <button onclick="toggleHistory()" id="historyToggle" 
+                class="px-4 py-2 text-sm bg-gray-600 hover:bg-gray-700 text-white rounded-md transition">
+          Show History
+        </button>
+      </div>
+      <div id="historyContent" class="hidden space-y-4"></div>
+    </div>
+  </main>
+
+  <script>
+    // Check for active jobs on page load
+    document.addEventListener('DOMContentLoaded', function() {
+      checkForActiveJobs();
+      loadHistory();
+    });
+
+    // Check for active jobs by trying recent job IDs from localStorage
+    function checkForActiveJobs() {
+      const recentJobId = localStorage.getItem('currentJobId');
+      if (recentJobId) {
+        fetch(`/job/${recentJobId}`)
+          .then(response => {
+            if (response.ok) {
+              return response.json();
+            }
+            throw new Error('Job not found');
+          })
+          .then(job => {
+            // Only show if job is still active or recently completed
+            if (job.status !== 'done' || isRecentJob(job.created)) {
+              updateJobCard(job);
+              
+              // Continue polling if still active
+              if (job.status !== 'done' && job.status !== 'error') {
+                startPolling(job.id);
+              }
+              
+              // Disable form if job is active
+              if (job.status !== 'done' && job.status !== 'error') {
+                const form = document.getElementById('ytForm');
+                const submitBtn = form.querySelector('button[type="submit"]');
+                const urlInput = form.querySelector('input[name="url"]');
+                submitBtn.disabled = true;
+                urlInput.disabled = true;
+              }
+            }
+          })
+          .catch(error => {
+            // Job not found or error, clear stored ID and check for any active jobs
+            localStorage.removeItem('currentJobId');
+            checkForAnyActiveJobs();
+          });
+      } else {
+        // No stored job ID, check for any active jobs
+        checkForAnyActiveJobs();
+      }
+    }
+
+    // Check for any active jobs on the server
+    function checkForAnyActiveJobs() {
+      fetch('/jobs/active')
+        .then(response => response.json())
+        .then(jobs => {
+          if (jobs.length > 0) {
+            // Show the most recent active job
+            const job = jobs[0];
+            localStorage.setItem('currentJobId', job.id);
+            updateJobCard(job);
+            
+            // Continue polling if still active
+            if (job.status !== 'done' && job.status !== 'error') {
+              startPolling(job.id);
+              
+              // Disable form if job is active
+              const form = document.getElementById('ytForm');
+              const submitBtn = form.querySelector('button[type="submit"]');
+              const urlInput = form.querySelector('input[name="url"]');
+              submitBtn.disabled = true;
+              urlInput.disabled = true;
+            }
+          }
+        })
+        .catch(error => {
+          console.log('No active jobs found');
+        });
+    }
+
+    function isRecentJob(createdTime) {
+      const jobTime = new Date(createdTime);
+      const now = new Date();
+      const hoursDiff = (now - jobTime) / (1000 * 60 * 60);
+      return hoursDiff < 24; // Show jobs from last 24 hours
+    }
+
+    // Handle successful job creation
+    document.body.addEventListener('htmx:afterRequest', function(evt) {
+      if (evt.detail.xhr.status === 200 && evt.target.id === 'ytForm') {
+        const response = JSON.parse(evt.detail.xhr.responseText);
+        if (response.id) {
+          // Store job ID for page refresh persistence
+          localStorage.setItem('currentJobId', response.id);
+          
+          // Disable form during processing
+          const form = document.getElementById('ytForm');
+          const submitBtn = form.querySelector('button[type="submit"]');
+          const urlInput = form.querySelector('input[name="url"]');
+          
+          submitBtn.disabled = true;
+          urlInput.disabled = true;
+          
+          startPolling(response.id);
+        }
+      }
+    });
+
+    // Reset form when starting new transcription
+    function resetForm() {
+      const form = document.getElementById('ytForm');
+      const submitBtn = form.querySelector('button[type="submit"]');
+      const urlInput = form.querySelector('input[name="url"]');
+      
+      submitBtn.disabled = false;
+      urlInput.disabled = false;
+      urlInput.value = '';
+      
+      // Clear stored job ID
+      localStorage.removeItem('currentJobId');
+      
+      document.getElementById('jobCard').innerHTML = '';
+    }
+
+    function startPolling(jobId) {
+      const jobCard = document.getElementById('jobCard');
+      
+      function poll() {
+        fetch(`/job/${jobId}`)
+          .then(response => response.json())
+          .then(job => {
+            updateJobCard(job);
+            
+            // Continue polling if not done
+            if (job.status !== 'done' && job.status !== 'error') {
+              // More frequent polling during active transcription
+              const interval = job.status === 'transcribing' ? 1000 : 2000;
+              setTimeout(poll, interval);
+            }
+          })
+          .catch(error => {
+            console.error('Polling error:', error);
+            jobCard.innerHTML = `
+              <div class="bg-red-50 border border-red-200 rounded-lg p-4">
+                <p class="text-red-800">Error checking job status. Retrying...</p>
+              </div>
+            `;
+            // Retry after error
+            setTimeout(poll, 5000);
+          });
+      }
+      
+      poll();
+    }
+
+    function updateJobCard(job) {
+      const jobCard = document.getElementById('jobCard');
+      const progressWidth = job.progress || 0;
+      
+      let statusColor = 'bg-blue-600';
+      let statusText = job.status;
+      let progressColor = 'bg-blue-600';
+      let statusDescription = '';
+      
+      switch(job.status) {
+        case 'queued':
+          statusColor = 'bg-yellow-600';
+          statusText = 'Queued';
+          statusDescription = 'Waiting to start processing...';
+          break;
+        case 'fetching_info':
+          statusColor = 'bg-cyan-600';
+          statusText = 'Fetching Info';
+          statusDescription = 'Getting video information...';
+          break;
+        case 'downloading':
+          statusColor = 'bg-blue-600';
+          statusText = 'Downloading';
+          statusDescription = 'Downloading audio from YouTube...';
+          break;
+        case 'transcribing':
+          statusColor = 'bg-purple-600';
+          statusText = 'Transcribing';
+          statusDescription = 'Converting audio to text with AI...';
+          progressColor = 'bg-purple-600';
+          break;
+        case 'done':
+          statusColor = 'bg-green-600';
+          statusText = 'Completed';
+          statusDescription = 'Transcription finished successfully!';
+          progressColor = 'bg-green-600';
+          break;
+        case 'error':
+          statusColor = 'bg-red-600';
+          statusText = 'Failed';
+          statusDescription = job.error || 'An error occurred during processing';
+          progressColor = 'bg-red-600';
+          break;
+        default:
+          statusDescription = 'Processing your request...';
+      }
+
+      jobCard.innerHTML = `
+        <div class="bg-white/70 backdrop-blur-md shadow-xl rounded-2xl p-8 ring-1 ring-gray-200/40">
+          <!-- Video Information Section -->
+          ${job.title ? `
+            <div class="flex items-start gap-4 mb-6 p-4 bg-gray-50 rounded-lg">
+              ${job.thumbnail ? `
+                <img src="${job.thumbnail}" alt="Video thumbnail" class="w-24 h-18 object-cover rounded-md flex-shrink-0" />
+              ` : ''}
+              <div class="flex-1 min-w-0">
+                <h3 class="text-lg font-semibold text-gray-800 mb-1 line-clamp-2">${job.title}</h3>
+                <div class="flex items-center gap-4 text-sm text-gray-600">
+                  ${job.channel_name ? `<span>Channel: ${job.channel_name}</span>` : ''}
+                  ${job.duration ? `<span>Duration: ${Math.floor(job.duration / 60)}:${String(job.duration % 60).padStart(2, '0')}</span>` : ''}
+                </div>
+              </div>
+            </div>
+          ` : ''}
+          
+          <div class="flex justify-between items-start mb-6">
+            <div>
+              <h3 class="text-lg font-semibold text-gray-800 mb-1">${job.title ? 'Transcription Status' : 'Transcription Job'}</h3>
+              <p class="text-sm text-gray-600">${statusDescription}</p>
+            </div>
+            <span class="px-3 py-1 rounded-full text-sm font-medium text-white ${statusColor} flex items-center gap-2">
+              ${job.status === 'transcribing' || job.status === 'fetching_info' ? `
+                <svg class="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+              ` : ''}
+              ${statusText}
+            </span>
+          </div>
+          
+          <!-- Progress bars -->
+          <div class="mb-6 space-y-4">
+            <!-- Overall Progress -->
+            <div>
+              <div class="flex justify-between text-sm text-gray-600 mb-2">
+                <span>Overall Progress</span>
+                <span>${progressWidth}%</span>
+              </div>
+              <div class="h-3 w-full bg-gray-200 rounded-full overflow-hidden">
+                <div class="h-full ${progressColor} rounded-full transition-all duration-500 ease-out ${job.status === 'transcribing' ? 'bg-gradient-to-r from-purple-600 to-purple-400' : ''}"
+                     style="width: ${progressWidth}%"></div>
+              </div>
+            </div>
+            
+            <!-- Audio Download Progress -->
+            ${job.audio_progress !== undefined ? `
+            <div>
+              <div class="flex justify-between text-sm text-gray-600 mb-2">
+                <span>Audio Download</span>
+                <span>${job.audio_progress}%</span>
+              </div>
+              <div class="h-2 w-full bg-gray-200 rounded-full overflow-hidden">
+                <div class="h-full bg-blue-500 rounded-full transition-all duration-500 ease-out"
+                     style="width: ${job.audio_progress}%"></div>
+              </div>
+            </div>
+            ` : ''}
+            
+            <!-- Transcription Progress -->
+            ${job.transcript_progress !== undefined ? `
+            <div>
+              <div class="flex justify-between text-sm text-gray-600 mb-2">
+                <span>Transcription</span>
+                <span>${job.transcript_progress}%</span>
+              </div>
+              <div class="h-2 w-full bg-gray-200 rounded-full overflow-hidden">
+                <div class="h-full bg-purple-500 rounded-full transition-all duration-500 ease-out"
+                     style="width: ${job.transcript_progress}%"></div>
+              </div>
+            </div>
+            ` : ''}
+          </div>
+
+          ${job.error ? `
+            <div class="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
+              <div class="flex items-start gap-3">
+                <svg class="w-5 h-5 text-red-500 mt-0.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                  <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd"></path>
+                </svg>
+                <p class="text-red-800 text-sm">${job.error}</p>
+              </div>
+            </div>
+          ` : ''}
+
+          ${job.text ? `
+            <div class="mb-6">
+              <h4 class="text-md font-medium text-gray-800 mb-3">Transcript</h4>
+              <div class="bg-gray-50 rounded-lg p-4 max-h-64 overflow-y-auto">
+                <pre class="whitespace-pre-wrap text-sm text-gray-900 font-mono">${job.text}</pre>
+              </div>
+              <button onclick="copyToClipboard(event, \`${job.text.replace(/`/g, '\\`').replace(/\$/g, '\\$')}\`)" 
+                      class="mt-3 inline-flex items-center gap-2 px-4 py-2 text-sm bg-gray-600 hover:bg-gray-700 text-white rounded-md transition" 
+                      id="copy-btn-${job.id}">
+                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                </svg>
+                <span>Copy Text</span>
+              </button>
+            </div>
+          ` : ''}
+
+          ${job.status === 'done' || job.audio_file ? `
+            <div class="flex flex-col sm:flex-row gap-3">
+              ${job.file ? `
+                <a href="${job.file}" download
+                   class="inline-flex items-center justify-center gap-2 px-6 py-3 bg-green-600 hover:bg-green-700 text-white font-medium rounded-lg transition flex-1">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                  Download Transcript
+                </a>
+              ` : ''}
+              ${job.audio_file ? `
+                <a href="${job.audio_file}" download
+                   class="inline-flex items-center justify-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition flex-1">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 14.142M4.929 4.929A10 10 0 0018.07 18.07" />
+                  </svg>
+                  Download Audio
+                </a>
+              ` : ''}
+              ${job.status === 'done' ? `
+                <button onclick="resetForm()" 
+                        class="inline-flex items-center justify-center gap-2 px-6 py-3 bg-gray-600 hover:bg-gray-700 text-white font-medium rounded-lg transition">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v1m6 11V9a7 7 0 10-6 6.929V20M6 12H4m15.071.071A8.001 8.001 0 1119.071 4.93" />
+                  </svg>
+                  New Transcription
+                </button>
+              ` : ''}
+            </div>
+          ` : ''}
+          
+          ${job.status !== 'done' && job.status !== 'error' ? `
+            <div class="text-center text-gray-500">
+              <p class="text-sm">Please wait while we process your video...</p>
+            </div>
+          ` : ''}
+        </div>
+      `;
+    }
+
+    function copyToClipboard(event, text) {
+      event.preventDefault();
+      const btn = event.target.closest('button');
+      const span = btn.querySelector('span');
+      const originalText = span.textContent;
+      
+      navigator.clipboard.writeText(text).then(() => {
+        // Show success feedback
+        span.textContent = 'Text Copied!';
+        btn.classList.remove('bg-gray-600', 'hover:bg-gray-700');
+        btn.classList.add('bg-green-600', 'hover:bg-green-700');
+        
+        setTimeout(() => {
+          span.textContent = originalText;
+          btn.classList.remove('bg-green-600', 'hover:bg-green-700');
+          btn.classList.add('bg-gray-600', 'hover:bg-gray-700');
+        }, 2000);
+      }).catch(err => {
+        console.error('Failed to copy text: ', err);
+        span.textContent = 'Copy Failed';
+        btn.classList.add('bg-red-600');
+        setTimeout(() => {
+          span.textContent = originalText;
+          btn.classList.remove('bg-red-600');
+        }, 2000);
+      });
+    }
+
+    // History functionality
+    function toggleHistory() {
+      const content = document.getElementById('historyContent');
+      const toggle = document.getElementById('historyToggle');
+      
+      if (content.classList.contains('hidden')) {
+        content.classList.remove('hidden');
+        toggle.textContent = 'Hide History';
+        loadHistory();
+      } else {
+        content.classList.add('hidden');
+        toggle.textContent = 'Show History';
+      }
+    }
+
+    function loadHistory() {
+      fetch('/jobs/history')
+        .then(response => response.json())
+        .then(jobs => {
+          displayHistory(jobs);
+        })
+        .catch(error => {
+          console.error('Failed to load history:', error);
+        });
+    }
+
+    function displayHistory(jobs) {
+      const historyContent = document.getElementById('historyContent');
+      
+      if (jobs.length === 0) {
+        historyContent.innerHTML = `
+          <div class="text-center text-gray-500 py-8">
+            <p>No transcriptions found. Upload your first video to get started!</p>
+          </div>
+        `;
+        return;
+      }
+
+      historyContent.innerHTML = jobs.map(job => `
+        <div class="bg-white/70 backdrop-blur-md shadow-lg rounded-xl p-6 ring-1 ring-gray-200/40 hover:ring-blue-400/40 transition">
+          <div class="flex items-start gap-4">
+            ${job.thumbnail ? `
+              <img src="${job.thumbnail}" alt="Video thumbnail" class="w-20 h-15 object-cover rounded-md flex-shrink-0" />
+            ` : ''}
+            <div class="flex-1">
+              <h3 class="text-lg font-semibold text-gray-800 mb-2">${job.title || 'Unknown Video'}</h3>
+              <div class="flex items-center gap-4 text-sm text-gray-600 mb-3">
+                ${job.channel_name ? `<span>Channel: ${job.channel_name}</span>` : ''}
+                ${job.duration ? `<span>Duration: ${Math.floor(job.duration / 60)}:${String(job.duration % 60).padStart(2, '0')}</span>` : ''}
+                <span>Transcribed: ${new Date(job.created).toLocaleDateString()}</span>
+              </div>
+              <div class="flex flex-wrap gap-2">
+                ${job.file ? `
+                  <a href="${job.file}" download
+                     class="inline-flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm rounded-md transition">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    Download Transcript
+                  </a>
+                ` : ''}
+                ${job.audio_file ? `
+                  <a href="${job.audio_file}" download
+                     class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-md transition">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 14.142M4.929 4.929A10 10 0 0018.07 18.07" />
+                    </svg>
+                    Download Audio
+                  </a>
+                ` : ''}
+                <button onclick="viewTranscript('${job.id}', \`${(job.text || '').replace(/`/g, '\\`').replace(/\$/g, '\\$')}\`)"
+                        class="inline-flex items-center gap-2 px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white text-sm rounded-md transition">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                  </svg>
+                  View Transcript
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function viewTranscript(jobId, text) {
+      if (!text) {
+        alert('No transcript available for this job.');
+        return;
+      }
+      
+      // Create a modal-like view for the transcript
+      const modal = document.createElement('div');
+      modal.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50';
+      modal.innerHTML = `
+        <div class="bg-white rounded-lg max-w-4xl max-h-[80vh] w-full flex flex-col">
+          <div class="flex justify-between items-center p-6 border-b">
+            <h3 class="text-lg font-semibold">Transcript</h3>
+            <button onclick="this.closest('.fixed').remove()" class="text-gray-500 hover:text-gray-700">
+              <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+          <div class="flex-1 overflow-y-auto p-6">
+            <pre class="whitespace-pre-wrap text-sm text-gray-900 font-mono">${text}</pre>
+          </div>
+          <div class="flex gap-2 p-6 border-t">
+            <button onclick="copyToClipboard(event, \`${text.replace(/`/g, '\\`').replace(/\$/g, '\\$')}\`)" 
+                    class="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-md transition">
+              Copy Text
+            </button>
+            <button onclick="this.closest('.fixed').remove()" 
+                    class="px-4 py-2 bg-gray-300 hover:bg-gray-400 text-gray-700 rounded-md transition">
+              Close
+            </button>
+          </div>
+        </div>
+      `;
+      
+      document.body.appendChild(modal);
+    }
+  </script>
+</body>
+</html>
