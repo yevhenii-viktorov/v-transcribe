@@ -1,4 +1,4 @@
-module v-transcribe
+module github.com/yevhenii-viktorov/v-transcribe
 
 go 1.24.4
 

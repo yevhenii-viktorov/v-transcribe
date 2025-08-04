@@ -18,7 +18,7 @@ import (
 type Job struct {
 	ID             string    `json:"id"`
 	Status         string    `json:"status"`
-	URL            string    `json:"url,omitempty"` // Store URL for resumption
+	URL            string    `json:"url,omitempty"`
 	File           string    `json:"file,omitempty"`
 	AudioFile      string    `json:"audio_file,omitempty"`
 	Text           string    `json:"text,omitempty"`
@@ -32,7 +32,7 @@ type Job struct {
 	Title          string    `json:"title,omitempty"`
 	Description    string    `json:"description,omitempty"`
 	Thumbnail      string    `json:"thumbnail,omitempty"`
-	Duration       int       `json:"duration,omitempty"` // Duration in seconds
+	Duration       int       `json:"duration,omitempty"`
 	ChannelName    string    `json:"channel_name,omitempty"`
 }
 
@@ -40,35 +40,25 @@ var (
 	jobs   = make(map[string]*Job)
 	jobsMu sync.RWMutex
 	
-	// Job queue for background processing
-	jobQueue = make(chan string, 100) // Buffer for job IDs
+	jobQueue = make(chan string, 100)
 )
 
 func main() {
-	// Ensure data directory exists
 	if err := os.MkdirAll("/data", 0755); err != nil {
 		log.Printf("Warning: Could not create /data directory: %v", err)
 	}
 	
-	// Ensure jobs directory exists for persistence
 	if err := os.MkdirAll("/data/jobs", 0755); err != nil {
 		log.Printf("Warning: Could not create /data/jobs directory: %v", err)
 	}
 	
-	// Load existing jobs from disk
 	loadJobsFromDisk()
-
-	// Start background worker for job processing
 	go backgroundWorker()
-
-	// Setup HTTP handlers
 	http.HandleFunc("/job", handleJob)
 	http.HandleFunc("/job/", handleGetJob)
 	http.HandleFunc("/jobs/active", handleGetActiveJobs)
 	http.HandleFunc("/jobs/history", handleGetJobHistory)
 	http.Handle("/files/", http.StripPrefix("/files/", http.FileServer(http.Dir("/data"))))
-
-	// CORS middleware for local development
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
@@ -113,7 +103,6 @@ func handleJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate YouTube URL
 	if !isValidYouTubeURL(payload.URL) {
 		http.Error(w, "Invalid YouTube URL", http.StatusBadRequest)
 		return
@@ -123,7 +112,7 @@ func handleJob(w http.ResponseWriter, r *http.Request) {
 	job := &Job{
 		ID:       id,
 		Status:   "queued",
-		URL:      payload.URL, // Store URL for resumption
+		URL:      payload.URL,
 		Progress: 0,
 		Created:  time.Now(),
 	}
@@ -132,7 +121,6 @@ func handleJob(w http.ResponseWriter, r *http.Request) {
 	jobs[id] = job
 	jobsMu.Unlock()
 
-	// Queue job for background processing instead of immediate processing
 	select {
 	case jobQueue <- id:
 		log.Printf("Job %s queued for background processing", id)

@@ -4,12 +4,10 @@
 # COPY THIS ENTIRE CONTENT TO YOUR EXISTING docker-compose.yml
 # Just append these services and volumes to your existing file
 
-# Environment file configuration (if not already in your compose file)
 x-env-files: &env-files
  - config/default.env
  - config/secrets.env
 
-# Add these anchors if not already in your compose file
 x-environment: &default-tz-puid-pgid
  TZ: $TZ
  PUID: $PUID
@@ -24,7 +22,6 @@ x-common-keys-apps: &common-keys-apps
 
 services:
 
-  # YouTube Transcription API
   v-transcribe-api:
     <<: *common-keys-apps
     build:
@@ -40,7 +37,7 @@ services:
       - /tmp:/tmp
     networks:
       npm_proxy:
-        ipv4_address: 192.168.10.71  # Update if this IP is taken
+        ipv4_address: 192.168.10.71
     deploy:
       resources:
         limits:
@@ -48,7 +45,6 @@ services:
         reservations:
           memory: 256M
 
-  # OpenAI Whisper Transcription Service
   v-transcribe-whisper:
     <<: *common-keys-apps
     image: ghcr.io/mutablelogic/go-whisper:latest
@@ -56,16 +52,16 @@ services:
     env_file: *env-files
     environment:
       <<: *default-tz-puid-pgid
-      - WHISPER_MODEL=ggml-tiny.bin  # Fast processing, good quality
+      - WHISPER_MODEL=ggml-tiny.bin
     volumes:
       - youtube-whisper-models:/data
     networks:
       npm_proxy:
-        ipv4_address: 192.168.10.72  # Update if this IP is taken
+        ipv4_address: 192.168.10.72
     deploy:
       resources:
         limits:
-          memory: 1200M   # Whisper needs more memory
+          memory: 1200M
         reservations:
           memory: 600M
     healthcheck:
@@ -75,7 +71,6 @@ services:
       retries: 3
       start_period: 60s
 
-  # Frontend (serves static files and acts as API proxy)
   v-transcribe-web:
     <<: *common-keys-apps
     image: nginx:alpine
@@ -83,7 +78,7 @@ services:
     env_file: *env-files
     networks:
       npm_proxy:
-        ipv4_address: 192.168.10.73  # Update if this IP is taken
+        ipv4_address: 192.168.10.73
     volumes:
       - $DOCKERDIR/v-transcribe/frontend:/usr/share/nginx/html:ro
       - youtube-transcripts:/usr/share/nginx/html/files:ro
@@ -92,7 +87,6 @@ services:
       - v-transcribe-api
       - v-transcribe-whisper
 
-# ADD THESE VOLUMES TO YOUR EXISTING volumes: section
 volumes:
   youtube-whisper-models:
     driver: local
