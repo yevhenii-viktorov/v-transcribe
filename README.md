@@ -25,7 +25,8 @@ A self-hosted YouTube transcription service built with Go, HTMX, and Docker Comp
 
 1. **Clone and setup**:
    ```bash
-   git clone <your-repo> && cd v-transcribe
+   git clone https://github.com/yevhenii-viktorov/v-transcribe.git
+   cd v-transcribe
    ```
 
 2. **Start the services**:

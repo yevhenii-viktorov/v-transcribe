@@ -5,7 +5,7 @@
 ### Step 1: Copy Code to Server
 ```bash
 # In your docker directory where your main docker-compose.yml is
-git clone <your-repo> v-transcribe
+git clone https://github.com/yevhenii-viktorov/v-transcribe.git
 ```
 
 ### Step 2: Add to Your docker-compose.yml
